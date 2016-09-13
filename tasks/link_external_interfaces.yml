@@ -1,0 +1,29 @@
+---
+
+- name: 'Script initialization"'
+  shell: 'sh /tmp/neutron-ovs-multiplex.sh init'
+  run_once: True
+
+- set_fact: var_interfaces_db='{{var_interfaces_db}}{{ item.interface }};{{ item.ip }}\n'
+  with_items: "{{ openstack_external_interfaces }}"
+  vars:
+     - var_interfaces_db: ""
+
+- debug: var=var_interfaces_db
+
+- name: Copy network interface db
+  shell: 'echo "{{ var_interfaces_db }}" > /tmp/neutron_ovs_multiplex_interfaces_db'
+
+- set_fact: var_interfaces='{{ var_interfaces }} {{ item.interface }}'
+  with_items: "{{ openstack_external_interfaces }}"
+  vars:
+     - var_interfaces: ""
+
+- debug: var=var_interfaces
+
+
+
+- name: 'Execute Script'
+  shell: |
+        '/tmp/neutron-ovs-multiplex.sh {{ var_interfaces }}'
+  run_once: True

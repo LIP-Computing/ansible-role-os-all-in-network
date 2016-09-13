@@ -1,0 +1,7 @@
+---
+# Pre deployment tasks
+- name: Copy network link script
+  template: src={{ item.src }} dest={{ item.dest }} mode=0740 owner=root backup=yes
+  with_items:
+    - { src: 'neutron-ovs-multiplex.sh.j2', dest: '/tmp/neutron-ovs-multiplex.sh' }
+

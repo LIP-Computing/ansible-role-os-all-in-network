@@ -1,0 +1,7 @@
+---
+- hosts: localhost
+  vars:
+    openstack_version: "liberty"
+
+  roles:
+    - ansible-role-os-all-in-network

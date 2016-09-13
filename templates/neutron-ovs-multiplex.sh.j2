@@ -1,0 +1,456 @@
+#!/bin/bash
+#
+# jorge@lip.pt 27-Aug-2016
+#
+#
+# 1) neutron-ovs-multiplex.sh init
+# 2) neutron-ovs-multiplex.sh map  eth1 eth2 ...   (beware not eth0)
+# 3) neutron-ovs-multiplex.sh loop eth1 eth2 ...
+#
+TOPDIR=/home/centos/
+FILE_NICS_DB=$TOPDIR/neutron_ovs_multiplex_interfaces_db
+FILE_ROUTERS_DB=$TOPDIR/neutron_ovs_multiplex_routers_db
+FILE_MAP_DB=$TOPDIR/neutron_ovs_multiplex_mapping_db
+FILE_OVS_NEWRULES=$TOPDIR/neutron_ovs_multiplex_ovs_newflows.txt
+LOOP_FREQUENCY=20
+DATETIME="date +%Y%m%d%H%M%S"
+BRIDGE="br-ex"
+#BRIDGE="br-test"
+COOKIE_PREFIX="c5"
+DBG=""
+export MY_PID=$$
+trap "exit 1" TERM
+
+function msg {
+  >&2 echo "$@"
+  grep -q "^fatal" <<< "$@" && kill $MY_PID
+}
+
+function get_net_fromaddr {
+  local addr="$1"
+  local mask="$2"
+  local i1 i2 i3 i4 m1 m2 m3 m4 xx prefix a IFS
+  IFS=. read -r i1 i2 i3 i4 <<< "$addr"
+  if [ -n "$mask" ]; then
+    IFS=. read -r m1 m2 m3 m4 <<< $mask
+    printf "%d.%d.%d.%d\n" "$((i1 & m1))" "$((i2 & m2))" "$((i3 & m3))" "$((i4 & m4))"
+  else
+    prefix=$(grep "/" <<< "$addr" | cut '-d/' -f2)
+    if [ -z "$prefix" ]; then
+      return
+    fi
+    IFS=. read -r xx m1 m2 m3 m4 <<< $(for a in $(seq 1 32); do if [ $(((a - 1) % 8)) -eq 0 ]; then echo -n .; fi; if [ "$a" -le "$prefix" ]; then echo -n 1; else echo -n 0; fi; done) 
+    printf "%d.%d.%d.%d\n" "$((i1 & (2#$m1)))" "$((i2 & (2#$m2)))" "$((i3 & (2#$m3)))" "$((i4 & (2#$m4)))"
+  fi
+}
+
+function get_local_net {
+  local addr
+  addr=$(get_nic_fromdb "" ADDRS | tail --lines=1 | cut -d, -f1)
+  get_net_fromaddr "$addr"
+}
+
+
+function get_nics_list {
+  local nic_list="$@"
+  local nics_filter
+  [ -z "$nic_list" ] && msg "fatal in get_nic_list empty argument"
+  nics_filter=$(tr -s " " "|" <<< "$nic_list")
+  ip addr | grep "^[0-9]" | cut '-d:' -f2 | tr -d " " | egrep "$nics_filter" | cut -d@ -f1 | tr "\n" " "
+}
+
+function get_nic_addrs {
+  local nic="$1"
+  [ -z "$nic" ] && msg "fatal in get_nic_addrs empty argument"
+  ip addr show dev "$nic" | grep " inet " | tr -s " " | cut '-d ' -f3    # IPv4 only
+}
+
+function get_nic_mac {
+  local nic="$1"
+  [ -z "$nic" ] && msg "fatal in get_nic_mac empty argument"
+  ip link show dev "$nic" | grep " link/ether " | tr -s " " | cut '-d ' -f3
+}
+
+function update_nics_db {
+  local nic_list="$1"
+  local nic nic_addrs dbentry
+  for nic in $nic_list; do
+    nic_addrs=$(get_nic_addrs "$nic")
+    if [ -n "$nic_addrs" ]; then
+      dbentry="$nic;$nic_addrs"
+      grep -q "$dbentry" $FILE_NICS_DB || echo "$dbentry" >> $FILE_NICS_DB
+    fi
+  done    
+}
+
+function get_nic_fromdb {
+  local nic="$1"
+  local field="$2"
+  local retvar="$3"
+  if [ -n "$nic" -a "$field" = "ADDR" ]; then
+    grep "^${nic};" $FILE_NICS_DB | tail --lines=1 | cut '-d;' -f2
+  elif [ -n "$nic" -a "$field" = "BYADDR" ]; then
+    # assume $nic contains an IPADDR to search, returns the nic name 
+    grep "${nic}" $FILE_NICS_DB | tail --lines=1 | cut '-d;' -f1
+  elif [ -n "$nic" -a "$field" = "MAC" ]; then
+    get_nic_mac "$nic"
+  elif [ -n "$nic" ]; then
+    grep "^${nic};" $FILE_NICS_DB | tail --lines=1
+  elif [ -z "$nic" -a "$field" = "ADDRS" ]; then
+    cut '-d;' -f2 < $FILE_NICS_DB | sort | uniq
+  elif [ -z "$nic" ]; then
+    cut '-d;' -f1 < $FILE_NICS_DB | sort | uniq
+  fi 
+}
+
+# Configure the ethernet interfaces given to this
+# host and join them to the OVS bridge.
+# no-flood is need to prevent looping of broadcasts
+# sent to the OVS switch either from downstream
+# or upstream ports.
+
+function setup_nics_fromdb {
+  local nic nic_addrs IFS
+  while IFS=";" read nic nic_addrs; do
+    if [ -z "$DBG" ]; then
+      ovs-vsctl list-ifaces "$BRIDGE" | grep -q "^$nic$" || \
+      (ip addr flush "$nic" && \
+       ip link set dev "$nic" down && \
+       ip link set dev "$nic" up && \
+       ovs-vsctl add-port "$BRIDGE" "$nic" && \
+       ovs-ofctl mod-port "$BRIDGE" "$nic" no-flood)
+      #ip link set dev "$nic" address 00:00:00:00:00:00  # not needed ??
+    else
+      msg "debug: flush $nic and adding it to $BRIDGE"
+    fi
+  done < $FILE_NICS_DB
+}
+
+function get_routers_list {
+  ip netns | grep "qrouter-" | cut '-d ' -f1 | tr "\n" " "
+}
+
+function get_router_int_addrs {
+  local router="$1"
+  local int="$2"
+  [ -z "$router" -o -z "$int" ] && msg "fatal in get_router_int_addrs empty argument"
+  ip netns exec "$router" ip addr show dev "$int" | grep " inet " | tr -s " " | cut '-d ' -f3  # IPv4 only
+}
+
+function get_router_int_mac {
+  local router="$1"
+  local int="$2"
+  [ -z "$router" -o -z "$int" ] && msg "fatal in get_router_int_mac empty argument"
+  ip netns exec "$router" ip link show dev "$int" | grep " link/ether " | tr -s " " | cut '-d ' -f3
+}
+
+function get_router_ints {
+  local router="$1"; [ -z "$router" ] && return
+  local local_net router_int router_int_list
+  local router_int_addr router_addr_list router_int_net
+  
+  local_net=$(get_local_net)
+  router_int_list=$(ip netns exec "$router" ip link | grep ": qg-" | cut -d: -f2 | tr -d " " | cut -d@ -f1)
+  for router_int in $router_int_list; do
+    router_addr_list=$(get_router_int_addrs "$router" "$router_int" | cut "-d " -f1)
+    for router_int_addr in $router_addr_list; do
+      [ -z "$router_int_addr" ] && continue
+      router_int_net=$(get_net_fromaddr "$router_int_addr")
+      if [ "$local_net" = "$router_int_net" ]; then
+        echo "$router_int"
+      fi
+    done
+  done
+}
+
+function update_routers_db {
+  local routers_list="$1"
+  local router_int_list router_int_mac router_addr_list dbentry router_int
+  for router in $routers_list; do 
+    router_int_list=$(get_router_ints "$router")
+    for router_int in $router_int_list; do
+      router_int_mac=$(get_router_int_mac "$router" "$router_int")
+      router_addr_list=$(get_router_int_addrs "$router" "$router_int" | tr '\n\r' ' ' | tr -s ' ')
+      dbentry="$router;$router_int;$router_int_mac;$router_addr_list"
+      grep -q "$dbentry" $FILE_ROUTERS_DB || echo "$dbentry" >> $FILE_ROUTERS_DB
+    done
+  done
+}
+
+function get_router_int_fromdb {
+  local router="$1"
+  local int="$2"
+  local field="$3"
+  if [ -z "$int" -a "$field" = "INTS" ]; then
+    grep "^$router;" $FILE_ROUTERS_DB | tail --lines=1 | cut '-d;' -f2
+  elif [ -n "$int" -a "$field" = "ADDR" ]; then
+    grep "^$router;$int;" $FILE_ROUTERS_DB | tail --lines=1 | cut '-d;' -f4
+  elif [ -n "$int" -a "$field" = "MAC" ]; then
+    grep "^$router;${int};" $FILE_ROUTERS_DB | tail --lines=1 | cut '-d;' -f3
+  elif [ -n "$int" ]; then
+    grep "^$router;${int};" $FILE_ROUTERS_DB | tail --lines=1
+  elif [ -z "$router" ]; then
+    cut '-d;' -f1 < $FILE_ROUTERS_DB | sort | uniq
+  fi 
+}
+
+function get_ovs_portnr {
+  local port="$1"
+  ovs-ofctl show "$BRIDGE" | grep -v LOCAL | grep "($port): addr:" | cut '-d ' -f2 | cut '-d(' -f1 
+}
+
+# An openflow cookie is used to identify the flow entries
+# associate to each IP address. Makes flow removal easier.
+
+function make_cookie_id {
+  local nic_mac="$1"
+  local router_ip; router_ip=$(cut '-d/' -f1 <<< "$2") # remove /NN netmask in x.x.x.x/NN
+  printf "0x%2.2s%6.6s%2.2x%2.2x%2.2x%2.2x\n" \
+    "${COOKIE_PREFIX}" "$(cut -d: -f4- <<<$nic_mac | tr -d ':')" \
+    "$(cut -d. -f1 <<<$router_ip)"  "$(cut -d. -f2 <<<$router_ip)" \
+    "$(cut -d. -f3 <<<$router_ip)"  "$(cut -d. -f4 <<<$router_ip)"
+}
+
+function generate_ovs_flow_entry_last {
+  local cookie
+
+  cookieD=$(make_cookie_id "01:01:01:01:01:01" "0.0.0.0")
+  cookieE=$(make_cookie_id "00:00:00:00:00:00" "0.0.0.0")
+
+  local pD="cookie=$cookieD, table=0, priority=21" # evaluated in 4th place
+  local pE="cookie=$cookieE, table=0, priority=20" # evaluated in 5th place
+
+  {
+    # rarp not arp
+    echo "$pD,arp,arp_op=3 actions=drop"
+    echo "$pD,arp,arp_op=4 actions=drop"
+
+    # arp request or reply
+    echo "$pE,arp actions=drop"
+
+  } >> $FILE_OVS_NEWRULES
+}
+
+function generate_ovs_flow_entry_l2 {
+  local nic nic_mac nic_addrs idx IFS router_ovsportsnr nic_ovsportnr cookie
+  IFS=";" read -r nic nic_addrs idx <<< "$1"
+
+  nic_ovsportnr=$(get_ovs_portnr "$nic")
+  [ -z "$nic_ovsportnr" ] && return
+  nic_mac=$(get_nic_fromdb "$nic" "MAC")
+  [ -z "$nic_mac" ] && msg "error in generate_ovs_flow no mac for $nic" && return
+
+  router_ovsportsnr=$(grep ";$nic;" "$FILE_MAP_DB" | cut '-d;' -f5 | sed 's/$/,/')
+  cookie=$(make_cookie_id "$nic_mac" "255.255.255.255")
+
+  local pC="cookie=$cookie, table=0, priority=24" # evaluated in 3rd place
+
+  {
+    if [ -n "$router_ovsportsnr" ]; then
+      # incoming on ETH L2 BROADCAST
+      echo "$pC,in_port=$nic_ovsportnr,dl_dst=ff:ff:ff:ff:ff:ff actions=$router_ovsportsnr"
+    else
+      echo "$pC,in_port=$nic_ovsportnr actions=drop"
+    fi
+
+  } >> $FILE_OVS_NEWRULES
+}
+
+function generate_ovs_flow_entry_l3 {
+  local router router_int router_addr router_mac router_ovsportnr nic nic_mac nic_ovsportnr router_ip cookie IFS
+  IFS=";" read -r router router_int router_addr router_mac router_ovsportnr nic nic_mac nic_ovsportnr cookie <<< "$1"
+  router_ip=$(cut '-d/' -f1 <<< "$router_addr") 
+
+  local pA="cookie=$cookie, table=0, priority=28" # evaluated in 1st place
+  local pB="cookie=$cookie, table=0, priority=26" # evaluated in 2nd place
+
+  {
+    # IP packets
+    echo "$pA,in_port=$nic_ovsportnr,ip,nw_dst=$router_ip actions=mod_dl_dst:$router_mac,output:$router_ovsportnr"
+    echo "$pA,in_port=$router_ovsportnr,ip,nw_src=$router_ip actions=mod_dl_src:$nic_mac,output:$nic_ovsportnr"
+
+    # incoming on ETH arp request
+    #echo "$pB,in_port=$nic_ovsportnr,arp,arp_op=1 actions=output:$router_ovsportnr"
+
+    # incoming on ETH arp reply to a request made by the router
+    echo "$pB,in_port=$nic_ovsportnr,arp,arp_op=2,arp_tpa=$router_ip actions=mod_dl_dst:$router_mac,load:$router_mac->NXM_NX_ARP_THA[],output:$router_ovsportnr"
+
+    # outgoing from ROUTER arp request
+    echo "$pB,in_port=$router_ovsportnr,arp,arp_spa=$router_ip,arp_op=1 actions=load:$nic_mac->NXM_NX_ARP_SHA[],mod_dl_src:$nic_mac,output:$nic_ovsportnr"
+
+    # outgoing from ROUTER arp reply
+    echo "$pB,in_port=$router_ovsportnr,arp,arp_spa=$router_ip,arp_op=2 actions=load:$nic_mac->NXM_NX_ARP_SHA[],mod_dl_src:$nic_mac,output:$nic_ovsportnr"
+
+  } >> $FILE_OVS_NEWRULES
+}
+
+function generate_ovs_flows_fromdb {
+  local dbentry
+  /bin/cp -f /dev/null "$FILE_OVS_NEWRULES"
+  while read dbentry; do
+    generate_ovs_flow_entry_l3 "$dbentry"
+  done < $FILE_MAP_DB
+  local idx=0
+  while read dbentry; do
+    generate_ovs_flow_entry_l2 "$dbentry;$idx"
+    ((idx += 1))
+  done < $FILE_NICS_DB
+  generate_ovs_flow_entry_last
+}
+
+function create_map_db_entry {
+  local router="$1"
+  local router_int="$2"
+  local router_addr="$3"
+  local nic="$4"
+  local cookie nic_mac router_mac nic_ovsportnr router_ovsportnr
+  nic_mac=$(get_nic_fromdb "$nic" "MAC")
+  [ -z "$nic_mac" ] && msg "error in create_map no mac for $nic" && return
+  nic_ovsportnr=$(get_ovs_portnr "$nic")
+  router_mac=$(get_router_int_fromdb "$router" "$router_int" "MAC")
+  router_ovsportnr=$(get_ovs_portnr "$router_int")
+
+  [ -z "$nic_mac" -o -z "$nic_ovsportnr" ] && \
+    msg "fatal getting $nic mac address or ovs port number"
+  [ -z "$router_mac" -o -z "$router_ovsportnr" ] && \
+    msg "fatal getting router $router mac address or ovs port number"
+
+  cookie=$(make_cookie_id "$nic_mac" "$router_addr")
+  local dbentry="$router;$router_int;$router_addr;$router_mac;$router_ovsportnr;$nic;$nic_mac;$nic_ovsportnr;$cookie"
+  #
+  grep -q "^$dbentry" $FILE_MAP_DB 2> /dev/null || echo "$dbentry" >> $FILE_MAP_DB
+}
+
+function create_map_db {
+  local routers_list router_int_list nic_list nic router_addr_list router router_addr router_int
+  nic_list=$(get_nic_fromdb "" "ALLNICS")
+  routers_list=$(get_router_int_fromdb "" "" "ALLROUTERS")
+  /bin/cp -f /dev/null "$FILE_OVS_NEWRULES"
+  for router in $routers_list; do
+    router_int_list=$(get_router_int_fromdb "$router" "" "INTS") 
+    for router_int in $router_int_list; do
+      router_addr_list=$(get_router_int_fromdb "$router" "$router_int" "ADDR")
+      for router_addr in $router_addr_list; do
+        #grep -q "^$router;$router_int;$router_addr;" $FILE_MAP_DB && continue    # keep ? remove ?
+        # find the physical ethernet interface that has the router IP address
+        nic=$(get_nic_fromdb "$router_addr" "BYADDR")
+        if [ -z "$nic" ]; then
+          msg "error physical interface mapped to $router_int $router_addr not found"
+          continue
+        else
+          create_map_db_entry "$router" "$router_int" "$router_addr" "$nic"
+        fi
+      done
+    done
+  done      
+}
+
+function apply_ovs_flows {
+  local flowentry
+  # find ovs entries that do not belong us
+  ovs-ofctl dump-flows "$BRIDGE" | egrep -v "cookie=0xc5|^NXST_FLOW" | \
+    while read flowentry; do
+      grep -q "$flowentry" "$FILE_OVS_NEWRULES" || \
+        echo "$flowentry" >> $FILE_OVS_NEWRULES
+    done
+
+  if [ -z "$DBG" ]; then
+    ovs-ofctl -O OpenFlow11 replace-flows "$BRIDGE" "$FILE_OVS_NEWRULES" 
+    if [ $? -ne 0 ]; then
+        echo "warning: failed replace-flows trying add-flows"
+        flush_ovs_flows 
+        ovs-ofctl add-flows "$BRIDGE" "$FILE_OVS_NEWRULES"
+    fi 
+  else
+    msg "debug: flows to replace"
+    cat $FILE_OVS_NEWRULES
+  fi
+}
+
+function flush_ovs_flows {
+  local match_exp="cookie=0x${COOKIE_PREFIX}00000000000000/0xff00000000000000"
+  if [ -z "$DBG" ]; then
+    ovs-ofctl del-flows "$BRIDGE" "$match_exp"
+  else
+    msg "debug: flush all $match_exp"
+  fi
+}
+
+function create_map_and_apply_flows {
+  local nic_list routers_list
+  /bin/cp -f /dev/null $FILE_ROUTERS_DB
+  /bin/cp -f /dev/null $FILE_MAP_DB
+  /bin/cp -f /dev/null $FILE_OVS_NEWRULES
+  nic_list=$(get_nics_list "$@")
+  msg "nics: $nic_list"
+  update_nics_db "$nic_list"
+  setup_nics_fromdb
+  routers_list=$(get_routers_list)
+  [ -z "$routers_list" ] && msg "fatal in create_map_and_apply_flows no router namespaces found"
+  msg "routers: $routers_list"
+  update_routers_db "$routers_list"
+  create_map_db
+  generate_ovs_flows_fromdb
+  apply_ovs_flows
+}
+
+function continous_loop {
+  local previous_flows current_flows
+  local match_exp="cookie=0x${COOKIE_PREFIX}00000000000000/0xffffffffffffffff" # match last entries
+  
+  echo "Starting: $($DATETIME)"
+  create_map_and_apply_flows "$@"
+  previous_flows=$(ovs-ofctl dump-flows "$BRIDGE" "$match_exp")
+  grep -q n_packets <<<$previous_flows || \
+    msg "fatal required flows not found"
+
+  while : ; do
+    sleep $LOOP_FREQUENCY
+    echo "Iteration: $($DATETIME)"
+    current_flows=$(ovs-ofctl dump-flows "$BRIDGE" "$match_exp")
+    if [ "$?" -eq 0 -a -n "$current_flows" -a "${previous_flows#*n_packets}" != "${current_flows#*n_packets}" ];then
+      previous_flows="$current_flows"
+      create_map_and_apply_flows "$@"
+    fi
+  done
+}
+
+function sanity_check {
+  ovs-vsctl br-exists "$BRIDGE" 
+  local status=$?
+  if [ $status -eq 2 ]; then
+    msg "fatal bridge <$BRIDGE> does not exist"
+  elif [ $status -ne 0 ]; then
+    msg "fatal exiting"
+  fi
+}
+
+# ####
+# main
+# ####
+
+sanity_check
+
+if [ "$1" = "init" ]; then
+  /bin/cp -f /dev/null $FILE_NICS_DB
+  /bin/cp -f /dev/null $FILE_ROUTERS_DB
+  /bin/cp -f /dev/null $FILE_MAP_DB
+  /bin/cp -f /dev/null $FILE_OVS_NEWRULES
+elif [ "$1" = "map" -a -n "$2" ]; then
+  shift
+  create_map_and_apply_flows "$@"
+elif [ "$1" = "reapply" ]; then
+  apply_ovs_flows
+elif [ "$1" = "flush" ]; then
+  flush_ovs_flows
+elif [ "$1" = "dump" ]; then
+  ovs-ofctl dump-flows "$BRIDGE"
+elif [ "$1" = "loop" -a -n "$2" ]; then
+  shift
+  continous_loop "$@"
+else
+  echo -e "error: syntax\n\n" \
+          " init\n  map eth0 eth1 ...\n  reapply\n  flush"
+  exit 1
+fi
+
