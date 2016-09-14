@@ -1,12 +1,2 @@
 ---
-# tasks file for ansible-role-nova-compute-node
-# Prepare deployment
-- include: pre-deploy.yml
-
- Configure the external bridge over a single network
-- include: create_networks.yml
-  environment: "{{ admin_auth_env }}"
-  when: "{{ create_networks }}"
-
-- include: link_external_interfaces.yml
-  when: "{{ configure_public_networks }}"
+# tasks file for os-all-in-network
