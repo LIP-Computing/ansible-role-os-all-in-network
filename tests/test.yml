@@ -2,6 +2,8 @@
 - hosts: localhost
   vars:
     openstack_version: "liberty"
+    create_networks: False
+    configure_public_networks: True
 
   roles:
     - ansible-role-os-all-in-network

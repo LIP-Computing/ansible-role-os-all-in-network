@@ -1,7 +1,7 @@
 ---
 
 - name: 'Script initialization"'
-  shell: 'sh /tmp/neutron-ovs-multiplex.sh init'
+  command: '/tmp/neutron-ovs-multiplex.sh init'
   run_once: True
 
 - set_fact: var_interfaces_db='{{var_interfaces_db}}{{ item.interface }};{{ item.ip }}\n'
@@ -21,9 +21,6 @@
 
 - debug: var=var_interfaces
 
-
-
 - name: 'Execute Script'
-  shell: |
-        '/tmp/neutron-ovs-multiplex.sh {{ var_interfaces }}'
+  command: '/tmp/neutron-ovs-multiplex.sh map {{ var_interfaces }}'
   run_once: True
