@@ -1,2 +1,13 @@
 ---
-# tasks file for os-all-in-network
+# tasks file for ansible-role-nova-compute-node
+# Prepare deployment
+- include: pre-deploy.yml
+
+# Create initial network infrastructure
+- include: create_networks.yml
+  environment: "{{ admin_auth_env }}"
+  when: "{{ create_networks }}"
+
+ #Configure the virtual machine interfaces as public interfaces for the instances
+- include: link_external_interfaces.yml
+  when: "{{ configure_public_networks }}"

@@ -1,2 +1,43 @@
 ---
 # defaults file for os-all-in-network
+openstack_version: "liberty"
+openstack_controller_host: "controller"
+openstack_external_net_name: external-net
+openstack_external_subnet_name: external-net
+openstack_external_subnet_gateway: 192.168.1.254
+openstack_external_subnet_cird: 192.168.1.0/24
+openstack_external_subnet_pool_start: 192.168.1.91
+openstack_external_subnet_pool_end: 192.168.1.93
+openstack_external_interfaces:
+  - { interface: eth1, ip: 192.168.1.91/24}
+  - { interface: eth2, ip: 192.168.1.92/24}
+  - { interface: eth3, ip: 192.168.1.93/24}
+
+openstack_demo_router: "router1"
+
+openstack_demo_net_name: demo_net
+openstack_demo_subnet_name: demo_subnet
+openstack_demo_tenant_id: xxx
+openstack_demo_subnet_gateway: 192.168.100.254
+openstack_demo_subnet_cidr: 192.168.100.0/24
+openstack_demo_dns_servers: '8.8.8.8 8.8.8.4'
+
+
+openstack_admin_user: "admin"
+openstack_admin_project: "admin"
+openstack_admin_password: "openstack"
+openstack_os_url: "http://{{ openstack_controller_host }}:35357/v3"
+openstack_os_identity_api_version: "3"
+
+admin_auth_env:
+  OS_PROJECT_DOMAIN_ID: default
+  OS_USER_DOMAIN_ID: default
+  OS_PROJECT_NAME: "{{ openstack_admin_project }}"
+  OS_USERNAME: "{{ openstack_admin_user }}"
+  OS_PASSWORD: "{{ openstack_admin_password }}"
+  OS_AUTH_URL: "{{ openstack_os_url }}"
+  OS_IDENTITY_API_VERSION: "{{ openstack_os_identity_api_version }}"
+
+# options
+create_networks: True
+configure_public_networks: True
