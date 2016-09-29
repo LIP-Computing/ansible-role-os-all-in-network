@@ -1,4 +1,9 @@
 ---
+- name: "Get {{ openstack_user_project}} user id"
+  command: 'openstack project show "{{ openstack_user_project }}" -c id -f value'
+  register: openstack_demo_tenant_id
+  environment: "{{ admin_auth_env }}"
+
 - name: 'Check public network "{{ openstack_external_net_name }}" exists'
   command: neutron net-show {{ openstack_external_net_name }}
   register: netpublicExist
@@ -35,7 +40,7 @@
 
 - name: Create demo network "{{ openstack_demo_net_name }}"
   shell: |
-       neutron net-create {{ openstack_demo_net_name }} --tenant-id {{ openstack_demo_tenant_id }} \
+       neutron net-create {{ openstack_demo_net_name }} --tenant-id {{ openstack_demo_tenant_id.stdout }} \
          --provider:network_type vxlan
   become_user: neutron
   run_once: True
@@ -64,7 +69,7 @@
 
 - name: Create Router "{{ openstack_demo_router }}".
   shell: |
-        neutron router-create {{ openstack_demo_router }}
+        neutron router-create {{ openstack_demo_router }} --tenant-id {{ openstack_demo_tenant_id.stdout }}
   become_user: neutron
   run_once: True
   when: routerdemoExist|failed

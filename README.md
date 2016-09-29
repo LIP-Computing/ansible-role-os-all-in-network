@@ -50,12 +50,12 @@ The variables are related to the Openstack version, endpoints, IPs, passwords:
     
     openstack_demo_router: demo router name ("router1" by default)
     
+    openstack_user_project: user project to create the demo network (demo by default)
     openstack_demo_net_name: private network name ("demo_net" by default)
     openstack_demo_subnet_name: private subnetwork name ("demo_net" by default)
     openstack_demo_subnet_gateway: private subnet gateway ("192.168.200.254" by default)
     openstack_demo_subnet_cidr: private subnet cidr ("192.168.200.0/24" by default)
     openstack_demo_dns_servers: private dns servers ("'8.8.8.8 8.8.8.4'" by default)
-    openstack_demo_tenant_id: tenant_id in which createt he private network
     
     
     openstack_admin_user: administration user ("admin" by default)
