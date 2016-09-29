@@ -9,6 +9,8 @@ Every time that we have new instances linked to floating ips, we need to run the
  
 This role provides two kind of network configuration:
 * Initial network creation/configuration. (create_networks: True)
+  * Create public flat network and its subnet.
+  * Create private network associated to the user project (no to admin), and its subnet.
 * Configure the interfaces of the internal interfaces (**) to be externally accessible(configure_public_networks: True).
 
 [1] Denominate VM as the Openstack virtual machine or instance in which we install the all-in openstack.
