@@ -56,7 +56,7 @@
   shell: |
        neutron subnet-create "{{ openstack_demo_net_name }}" --name {{ openstack_demo_subnet_name }} \
         --gateway {{ openstack_demo_subnet_gateway }} {{ openstack_demo_subnet_cidr }} \
-        --dns-nameservers list=true {{ openstack_demo_dns_servers }}
+        --tenant-id {{ openstack_demo_tenant_id.stdout }} --dns-nameservers list=true {{ openstack_demo_dns_servers }}
   become_user: neutron
   run_once: True
   when: subnetdemoExist|failed
