@@ -41,5 +41,5 @@ admin_auth_env:
   OS_IDENTITY_API_VERSION: "{{ openstack_os_identity_api_version }}"
 
 # options
-create_networks: True
-configure_public_networks: True
+create_networks: False
+configure_public_networks: False
