@@ -26,7 +26,7 @@
 - name: Create public subnetwork "{{ openstack_external_subnet_name }}"
   shell: |
        neutron subnet-create {{ openstack_external_net_name }} --name {{ openstack_external_subnet_name }} \
-        --gateway {{ openstack_external_subnet_gateway }}  {{ openstack_external_subnet_cird }}  \
+        --gateway {{ openstack_external_subnet_gateway }}  {{ openstack_external_subnet_cird }}  --disable-dhcp\
        --allocation-pool start={{ openstack_external_subnet_pool_start }},end={{ openstack_external_subnet_pool_end }}
   become_user: neutron
   run_once: True
