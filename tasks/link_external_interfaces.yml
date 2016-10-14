@@ -1,6 +1,6 @@
 ---
 
-- name: 'Script initialization"'
+- name: 'Execute initialization script'
   command: '/tmp/neutron-ovs-multiplex.sh init'
   run_once: True
 
@@ -19,8 +19,13 @@
   vars:
      - var_interfaces: ""
 
+
 - debug: var=var_interfaces
 
-- name: 'Execute Script'
+- name: 'Set bridge br-ex protocol to OpenFlow11'
+  command: 'ovs-vsctl set bridge br-ex protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13'
+  run_once: True
+
+- name: 'Execute map script'
   command: '/tmp/neutron-ovs-multiplex.sh map {{ var_interfaces }}'
   run_once: True
