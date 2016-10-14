@@ -101,6 +101,18 @@ Playbook Examples
       roles:
         - LIP-Computing.os-all-in-network
 
+FAQ
+----
+* ovs-ofctl - version negotiation failed:
+
+    unix:/var/run/openvswitch/br-ex.mgmt: version negotiation failed (we support version 0x04, peer supports version 0x01)
+    ovs-ofctl: br-ex: failed to connect to socket (Broken pipe)
+
+ * Solution
+ 
+    set Bridge br-ex protocols=OpenFlow11
+
+
 License
 -------
 
@@ -110,3 +122,5 @@ Author Information
 ------------------
 
 Contact: jorgesece@lip.pt
+
+

@@ -18,6 +18,7 @@ BRIDGE="br-ex"
 #BRIDGE="br-test"
 COOKIE_PREFIX="c5"
 DBG=""
+PROTOCOL="-O OpenFlow11"
 export MY_PID=$$
 trap "exit 1" TERM
 
@@ -196,7 +197,7 @@ function get_router_int_fromdb {
 
 function get_ovs_portnr {
   local port="$1"
-  ovs-ofctl show "$BRIDGE" | grep -v LOCAL | grep "($port): addr:" | cut '-d ' -f2 | cut '-d(' -f1 
+  ovs-ofctl $PROTOCOL show "$BRIDGE" | grep -v LOCAL | grep "($port): addr:" | cut '-d ' -f2 | cut '-d(' -f1
 }
 
 # An openflow cookie is used to identify the flow entries
@@ -348,18 +349,18 @@ function create_map_db {
 function apply_ovs_flows {
   local flowentry
   # find ovs entries that do not belong us
-  ovs-ofctl dump-flows "$BRIDGE" | egrep -v "cookie=0xc5|^NXST_FLOW" | \
+  ovs-ofctl $PROTOCOL dump-flows "$BRIDGE" | egrep -v "cookie=0xc5|^NXST_FLOW|^OFPST_FLOW" | \
     while read flowentry; do
       grep -q "$flowentry" "$FILE_OVS_NEWRULES" || \
         echo "$flowentry" >> $FILE_OVS_NEWRULES
     done
 
   if [ -z "$DBG" ]; then
-    ovs-ofctl -O OpenFlow11 replace-flows "$BRIDGE" "$FILE_OVS_NEWRULES" 
+    ovs-ofctl $PROTOCOL replace-flows "$BRIDGE" "$FILE_OVS_NEWRULES"
     if [ $? -ne 0 ]; then
         echo "warning: failed replace-flows trying add-flows"
         flush_ovs_flows 
-        ovs-ofctl add-flows "$BRIDGE" "$FILE_OVS_NEWRULES"
+        ovs-ofctl $PROTOCOL add-flows "$BRIDGE" "$FILE_OVS_NEWRULES"
     fi 
   else
     msg "debug: flows to replace"
@@ -370,7 +371,7 @@ function apply_ovs_flows {
 function flush_ovs_flows {
   local match_exp="cookie=0x${COOKIE_PREFIX}00000000000000/0xff00000000000000"
   if [ -z "$DBG" ]; then
-    ovs-ofctl del-flows "$BRIDGE" "$match_exp"
+    ovs-ofctl $PROTOCOL del-flows "$BRIDGE" "$match_exp"
   else
     msg "debug: flush all $match_exp"
   fi
@@ -400,14 +401,14 @@ function continous_loop {
   
   echo "Starting: $($DATETIME)"
   create_map_and_apply_flows "$@"
-  previous_flows=$(ovs-ofctl dump-flows "$BRIDGE" "$match_exp")
+  previous_flows=$(ovs-ofctl $PROTOCOL dump-flows "$BRIDGE" "$match_exp")
   grep -q n_packets <<<$previous_flows || \
     msg "fatal required flows not found"
 
   while : ; do
     sleep $LOOP_FREQUENCY
     echo "Iteration: $($DATETIME)"
-    current_flows=$(ovs-ofctl dump-flows "$BRIDGE" "$match_exp")
+    current_flows=$(ovs-ofctl $PROTOCOL dump-flows "$BRIDGE" "$match_exp")
     if [ "$?" -eq 0 -a -n "$current_flows" -a "${previous_flows#*n_packets}" != "${current_flows#*n_packets}" ];then
       previous_flows="$current_flows"
       create_map_and_apply_flows "$@"
@@ -444,7 +445,7 @@ elif [ "$1" = "reapply" ]; then
 elif [ "$1" = "flush" ]; then
   flush_ovs_flows
 elif [ "$1" = "dump" ]; then
-  ovs-ofctl dump-flows "$BRIDGE"
+  ovs-ofctl $PROTOCOL dump-flows "$BRIDGE"
 elif [ "$1" = "loop" -a -n "$2" ]; then
   shift
   continous_loop "$@"
