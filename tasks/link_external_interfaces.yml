@@ -1,9 +1,4 @@
 ---
-
-- name: 'Execute initialization script'
-  command: '/tmp/neutron-ovs-multiplex.sh init'
-  run_once: True
-
 - set_fact: var_interfaces_db='{{var_interfaces_db}}{{ item.interface }};{{ item.ip }}\n'
   with_items: "{{ openstack_external_interfaces }}"
   vars:
@@ -12,20 +7,21 @@
 - debug: var=var_interfaces_db
 
 - name: Copy network interface db
-  shell: 'echo "{{ var_interfaces_db }}" > /tmp/neutron_ovs_multiplex_interfaces_db'
+  shell: 'echo "{{ var_interfaces_db }}" > /home/centos/neutron_ovs_multiplex_interfaces_db'
 
 - set_fact: var_interfaces='{{ var_interfaces }} {{ item.interface }}'
   with_items: "{{ openstack_external_interfaces }}"
   vars:
      - var_interfaces: ""
 
+- name: 'Set bridge br-ex protocol to "{{ openvswitch_bridge_protocols }}'
+  command: 'ovs-vsctl set bridge br-ex protocols={{ openvswitch_bridge_protocols }}'
+  run_once: True
 
-- debug: var=var_interfaces
-
-- name: 'Set bridge br-ex protocol to OpenFlow11'
-  command: 'ovs-vsctl set bridge br-ex protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13'
+- name: 'Execute script for clean interfaces'
+  command: '/home/centos/neutron-ovs-multiplex.sh clean'
   run_once: True
 
 - name: 'Execute map script'
-  command: '/tmp/neutron-ovs-multiplex.sh map {{ var_interfaces }}'
+  command: '/home/centos/neutron-ovs-multiplex.sh map {{ var_interfaces }}'
   run_once: True

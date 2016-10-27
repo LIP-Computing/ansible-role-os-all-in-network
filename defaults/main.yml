@@ -40,6 +40,7 @@ admin_auth_env:
   OS_AUTH_URL: "{{ openstack_os_url }}"
   OS_IDENTITY_API_VERSION: "{{ openstack_os_identity_api_version }}"
 
+openvswitch_bridge_protocols: OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13
 # options
 create_networks: False
 configure_public_networks: False

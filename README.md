@@ -1,5 +1,5 @@
-Role Name
-=========
+OS ALL IN NETWORK
+=================
 
 Openstack network configuration for all-in configuration.
 It is designed to configure the public network interfaces of internal instances [2] to be accessible from outside the VM [1].
@@ -110,7 +110,17 @@ FAQ
 
  * Solution
  
-    set Bridge br-ex protocols=OpenFlow11
+    set variable to openvswitch_bridge_protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13
+
+* Network connectivity does not work after reboot the system
+ * Solution
+    Execute the script to clean and map the interfaces:
+    $ sh neutron-ovs-multiplex.sh clean
+    $ sh neutron-ovs-multiplex.sh map eth1 eth2 eth3 eth4
+    
+* Network connectivity does not work after reboot the openvswitch service
+ * Solution
+    Execute again the map command: $ sh neutron-ovs-multiplex.sh map eth1 eth2 eth3 eth4
 
 
 License

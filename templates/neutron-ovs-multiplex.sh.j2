@@ -2,10 +2,18 @@
 #
 # jorge@lip.pt 27-Aug-2016
 #
+# 1) create the neutron_ovs_multiplex_interfaces_db file with
+#    the IP the addresses allocated by the underlaying openstack 
+#    neutron to this machine, example of content:
 #
-# 1) neutron-ovs-multiplex.sh init
-# 2) neutron-ovs-multiplex.sh map  eth1 eth2 ...   (beware not eth0)
-# 3) neutron-ovs-multiplex.sh loop eth1 eth2 ...
+#    eth1;192.168.1.6/24
+#    eth2;192.168.1.7/24
+#    eth3;192.168.1.8/24
+#
+# 2) neutron-ovs-multiplex.sh clean
+# 3) neutron-ovs-multiplex.sh map  eth1 eth2 eth3   # beware not eth0
+# 4) neutron-ovs-multiplex.sh dump                  # just for checking
+# 5) neutron-ovs-multiplex.sh loop eth1 eth2 eth3
 #
 TOPDIR=/home/centos/
 FILE_NICS_DB=$TOPDIR/neutron_ovs_multiplex_interfaces_db
@@ -18,7 +26,7 @@ BRIDGE="br-ex"
 #BRIDGE="br-test"
 COOKIE_PREFIX="c5"
 DBG=""
-PROTOCOL="-O OpenFlow11"
+PROTOCOL="--protocols=OpenFlow12"
 export MY_PID=$$
 trap "exit 1" TERM
 
@@ -88,30 +96,35 @@ function get_nic_fromdb {
   local nic="$1"
   local field="$2"
   local retvar="$3"
-  if [ -n "$nic" -a "$field" = "ADDR" ]; then
+  local ipaddr
+  if [ -n "$nic" -a "$field" = "ADDR" ]; then       # get IP by NIC name
     grep "^${nic};" $FILE_NICS_DB | tail --lines=1 | cut '-d;' -f2
-  elif [ -n "$nic" -a "$field" = "BYADDR" ]; then
+  elif [ -n "$nic" -a "$field" = "BYADDR" ]; then   # get NIC by IP address
     # assume $nic contains an IPADDR to search, returns the nic name 
-    grep "${nic}" $FILE_NICS_DB | tail --lines=1 | cut '-d;' -f1
-  elif [ -n "$nic" -a "$field" = "MAC" ]; then
+    ipaddr=$(cut -f1 '-d/' <<< $nic)
+    grep "${ipaddr}" $FILE_NICS_DB | tail --lines=1 | cut '-d;' -f1
+  elif [ -n "$nic" -a "$field" = "MAC" ]; then      # get MAC address by NIC name
     get_nic_mac "$nic"
-  elif [ -n "$nic" ]; then
+  elif [ -n "$nic" ]; then                          # get full line by NIC name
     grep "^${nic};" $FILE_NICS_DB | tail --lines=1
-  elif [ -z "$nic" -a "$field" = "ADDRS" ]; then
+  elif [ -z "$nic" -a "$field" = "ADDRS" ]; then    # get all IP addresses 
     cut '-d;' -f2 < $FILE_NICS_DB | sort | uniq
-  elif [ -z "$nic" ]; then
+  elif [ -z "$nic" ]; then                          # get all NIC names
     cut '-d;' -f1 < $FILE_NICS_DB | sort | uniq
   fi 
 }
 
-# Configure the ethernet interfaces given to this
-# host and join them to the OVS bridge.
-# no-flood is need to prevent looping of broadcasts
-# sent to the OVS switch either from downstream
-# or upstream ports.
+# Define OVS flow protocols supported by the switch, sometimes necessary
+# with some openvswitch versions.
+# Configure the ethernet interfaces given to this host and join them to the 
+# OVS bridge.
+# The no-flood option is needed to prevent looping of broadcasts sent to the 
+# OVS switch either from downstream or upstream ports.
 
 function setup_nics_fromdb {
   local nic nic_addrs IFS
+  # set openflow versions acceptable
+  ovs-vsctl set bridge $BRIDGE protocols=OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13 2> /dev/null
   while IFS=";" read nic nic_addrs; do
     if [ -z "$DBG" ]; then
       ovs-vsctl list-ifaces "$BRIDGE" | grep -q "^$nic$" || \
@@ -120,10 +133,17 @@ function setup_nics_fromdb {
        ip link set dev "$nic" up && \
        ovs-vsctl add-port "$BRIDGE" "$nic" && \
        ovs-ofctl mod-port "$BRIDGE" "$nic" no-flood)
-      #ip link set dev "$nic" address 00:00:00:00:00:00  # not needed ??
     else
       msg "debug: flush $nic and adding it to $BRIDGE"
     fi
+  done < $FILE_NICS_DB
+}
+
+function cleanup_nics_fromdb {
+  local nic nic_addrs IFS
+  while IFS=";" read nic nic_addrs; do
+    ovs-vsctl del-port "$BRIDGE" $nic
+    ip link set dev "$nic" down
   done < $FILE_NICS_DB
 }
 
@@ -197,7 +217,7 @@ function get_router_int_fromdb {
 
 function get_ovs_portnr {
   local port="$1"
-  ovs-ofctl $PROTOCOL show "$BRIDGE" | grep -v LOCAL | grep "($port): addr:" | cut '-d ' -f2 | cut '-d(' -f1
+  ovs-ofctl $PROTOCOL show "$BRIDGE" | grep -v LOCAL | grep "($port): addr:" | cut '-d ' -f2 | cut '-d(' -f1 
 }
 
 # An openflow cookie is used to identify the flow entries
@@ -274,13 +294,16 @@ function generate_ovs_flow_entry_l3 {
     #echo "$pB,in_port=$nic_ovsportnr,arp,arp_op=1 actions=output:$router_ovsportnr"
 
     # incoming on ETH arp reply to a request made by the router
-    echo "$pB,in_port=$nic_ovsportnr,arp,arp_op=2,arp_tpa=$router_ip actions=mod_dl_dst:$router_mac,load:$router_mac->NXM_NX_ARP_THA[],output:$router_ovsportnr"
+    #echo "$pB,in_port=$nic_ovsportnr,arp,arp_op=2,arp_tpa=$router_ip actions=mod_dl_dst:$router_mac,load:$router_mac->NXM_NX_ARP_THA[],output:$router_ovsportnr"
+    echo "$pB,in_port=$nic_ovsportnr,arp,arp_op=2,arp_tpa=$router_ip actions=mod_dl_dst:$router_mac,set_field:$router_mac->arp_tha,output:$router_ovsportnr"
 
     # outgoing from ROUTER arp request
-    echo "$pB,in_port=$router_ovsportnr,arp,arp_spa=$router_ip,arp_op=1 actions=load:$nic_mac->NXM_NX_ARP_SHA[],mod_dl_src:$nic_mac,output:$nic_ovsportnr"
+    #echo "$pB,in_port=$router_ovsportnr,arp,arp_spa=$router_ip,arp_op=1 actions=load:$nic_mac->NXM_NX_ARP_SHA[],mod_dl_src:$nic_mac,output:$nic_ovsportnr"
+    echo "$pB,in_port=$router_ovsportnr,arp,arp_spa=$router_ip,arp_op=1 actions=set_field:$nic_mac->arp_sha,mod_dl_src:$nic_mac,output:$nic_ovsportnr"
 
     # outgoing from ROUTER arp reply
-    echo "$pB,in_port=$router_ovsportnr,arp,arp_spa=$router_ip,arp_op=2 actions=load:$nic_mac->NXM_NX_ARP_SHA[],mod_dl_src:$nic_mac,output:$nic_ovsportnr"
+    #echo "$pB,in_port=$router_ovsportnr,arp,arp_spa=$router_ip,arp_op=2 actions=load:$nic_mac->NXM_NX_ARP_SHA[],mod_dl_src:$nic_mac,output:$nic_ovsportnr"
+    echo "$pB,in_port=$router_ovsportnr,arp,arp_spa=$router_ip,arp_op=2 actions=set_field:$nic_mac->arp_sha,mod_dl_src:$nic_mac,output:$nic_ovsportnr"
 
   } >> $FILE_OVS_NEWRULES
 }
@@ -356,7 +379,7 @@ function apply_ovs_flows {
     done
 
   if [ -z "$DBG" ]; then
-    ovs-ofctl $PROTOCOL replace-flows "$BRIDGE" "$FILE_OVS_NEWRULES"
+    ovs-ofctl $PROTOCOL replace-flows "$BRIDGE" "$FILE_OVS_NEWRULES" 
     if [ $? -ne 0 ]; then
         echo "warning: failed replace-flows trying add-flows"
         flush_ovs_flows 
@@ -426,14 +449,20 @@ function sanity_check {
   fi
 }
 
+function nics_cleanup {
+   get_nic_fromdb ""
+}
+
 # ####
 # main
 # ####
 
 sanity_check
 
-if [ "$1" = "init" ]; then
-  /bin/cp -f /dev/null $FILE_NICS_DB
+if [ "$1" = "clean" ]; then
+  flush_ovs_flows
+  cleanup_nics_fromdb
+  #/bin/cp -f /dev/null $FILE_NICS_DB
   /bin/cp -f /dev/null $FILE_ROUTERS_DB
   /bin/cp -f /dev/null $FILE_MAP_DB
   /bin/cp -f /dev/null $FILE_OVS_NEWRULES
@@ -451,7 +480,8 @@ elif [ "$1" = "loop" -a -n "$2" ]; then
   continous_loop "$@"
 else
   echo -e "error: syntax\n\n" \
-          " init\n  map eth0 eth1 ...\n  reapply\n  flush"
+          " clean\n  map eth1 eth2 ...\n  dump\n  reapply\n  flush"
   exit 1
 fi
+
 
